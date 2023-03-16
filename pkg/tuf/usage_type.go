@@ -19,6 +19,15 @@ import (
 	"strings"
 )
 
+type customMetadata struct {
+	Usage  UsageKind  `json:"usage"`
+	Status StatusKind `json:"status"`
+}
+
+type sigstoreCustomMetadata struct {
+	Sigstore customMetadata `json:"sigstore"`
+}
+
 type UsageKind int
 
 const (

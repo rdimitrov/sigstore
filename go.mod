@@ -27,7 +27,6 @@ require (
 	github.com/segmentio/ksuid v1.0.4
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
 	github.com/stretchr/testify v1.8.2
-	github.com/theupdateframework/go-tuf v0.5.2
 	golang.org/x/crypto v0.8.0
 	golang.org/x/oauth2 v0.7.0
 	golang.org/x/term v0.7.0
@@ -86,7 +85,6 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/ryanuber/go-glob v1.0.0 // indirect
 	github.com/sirupsen/logrus v1.9.0 // indirect
-	github.com/syndtr/goleveldb v1.0.1-0.20220721030215-126854af5e6d // indirect
 	github.com/titanous/rocacheck v0.0.0-20171023193734-afe73141d399 // indirect
 	github.com/ysmood/goob v0.4.0 // indirect
 	github.com/ysmood/gson v0.7.3 // indirect
@@ -101,6 +99,7 @@ require (
 	google.golang.org/genproto v0.0.0-20230331144136-dcfb400f0633 // indirect
 	google.golang.org/grpc v1.54.0 // indirect
 	gopkg.in/square/go-jose.v2 v2.6.0 // indirect
+	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 

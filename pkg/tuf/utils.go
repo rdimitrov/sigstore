@@ -1,4 +1,4 @@
-package tuf2
+package tuf
 
 import (
 	"fmt"
@@ -20,16 +20,16 @@ func newFileImpl() targetImpl {
 	if noCache() {
 		return memTargets
 	}
+	// Otherwise use a disk-cache with in-memory cached targets.
 	targetsDir := cachedTargetsDir(rootCacheDir())
 	metadataDir := cachedMetadataDir(rootCacheDir())
-
+	// make sure the folders used to keep the metadata and targets exist
 	if err := os.MkdirAll(targetsDir, 0o700); err != nil {
 		return nil
 	}
 	if err := os.MkdirAll(metadataDir, 0o700); err != nil {
 		return nil
 	}
-	// Otherwise use a disk-cache with in-memory cached targets.
 	return &diskCache{
 		base:   targetsDir,
 		memory: memTargets,
@@ -93,6 +93,7 @@ func (d *diskCache) Set(p string, b []byte) error {
 func cachedTargetsDir(cacheRoot string) string {
 	return filepath.FromSlash(filepath.Join(cacheRoot, "targets"))
 }
+
 func cachedMetadataDir(cacheRoot string) string {
 	return filepath.FromSlash(filepath.Join(cacheRoot, "metadata"))
 }
