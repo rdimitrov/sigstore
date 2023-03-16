@@ -25,8 +25,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-
-	"github.com/theupdateframework/go-tuf/encrypted"
 )
 
 const (
@@ -61,7 +59,7 @@ func pemEncodeKeyPair(priv crypto.PrivateKey, pub crypto.PublicKey, pf PassFunc)
 	if password == nil {
 		return PEMEncode(PrivateKeyPEMType, derBytes), pubPEM, nil
 	}
-	if derBytes, err = encrypted.Encrypt(derBytes, password); err != nil {
+	if derBytes, err = Encrypt(derBytes, password); err != nil {
 		return nil, nil, err
 	}
 	return PEMEncode(EncryptedSigstorePrivateKeyPEMType, derBytes), pubPEM, nil
@@ -98,7 +96,7 @@ func MarshalPrivateKeyToEncryptedDER(priv crypto.PrivateKey, pf PassFunc) ([]byt
 	if password == nil {
 		return nil, errors.New("password was nil")
 	}
-	return encrypted.Encrypt(derKey, password)
+	return Encrypt(derKey, password)
 }
 
 // UnmarshalPEMToPrivateKey converts a PEM-encoded byte slice into a crypto.PrivateKey
@@ -122,7 +120,7 @@ func UnmarshalPEMToPrivateKey(pemBytes []byte, pf PassFunc) (crypto.PrivateKey, 
 				return nil, err
 			}
 			if password != nil {
-				derBytes, err = encrypted.Decrypt(derBytes, password)
+				derBytes, err = Decrypt(derBytes, password)
 				if err != nil {
 					return nil, err
 				}
