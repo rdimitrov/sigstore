@@ -1,0 +1,14 @@
+
+{
+  "repositories": {
+    "sigstore-tuf-root": ["https://sigstore-tuf-root.storage.googleapis.com"]
+  },
+  "mapping": [
+    {
+      "paths":        ["*"],
+      "repositories": ["sigstore-tuf-root"],
+      "terminating": true,
+      "threshold": 1
+    }
+  ]
+}

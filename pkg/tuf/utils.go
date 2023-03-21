@@ -95,7 +95,8 @@ func cachedTargetsDir(cacheRoot string) string {
 }
 
 func cachedMetadataDir(cacheRoot string) string {
-	return filepath.FromSlash(filepath.Join(cacheRoot, "metadata"))
+	// return filepath.FromSlash(filepath.Join(cacheRoot, "metadata"))
+	return filepath.FromSlash(cacheRoot)
 }
 
 func noCache() bool {
@@ -120,5 +121,5 @@ func rootCacheDir() string {
 }
 
 func cachedRemote(cacheRoot string) string {
-	return filepath.FromSlash(filepath.Join(cacheRoot, "remote.json"))
+	return filepath.FromSlash(filepath.Join(cacheRoot, "map.json"))
 }

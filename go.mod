@@ -22,7 +22,7 @@ require (
 	github.com/letsencrypt/boulder v0.0.0-20221109233200-85aa52084eaf
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/pkg/browser v0.0.0-20210911075715-681adbf594b8
-	github.com/rdimitrov/go-tuf-metadata v0.0.0-20230307193352-900c53e5ad74
+	github.com/rdimitrov/go-tuf-metadata v0.0.0-20230321173429-ce586616ecef
 	github.com/secure-systems-lab/go-securesystemslib v0.5.0
 	github.com/segmentio/ksuid v1.0.4
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
@@ -103,4 +103,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/rdimitrov/go-tuf-metadata => /Users/dimitrovr/workspace/go-tuf-metadata
+// replace github.com/rdimitrov/go-tuf-metadata => /Users/dimitrovr/workspace/go-tuf-metadata // remove: used for local development

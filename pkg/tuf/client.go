@@ -17,8 +17,7 @@ import (
 	"time"
 
 	"github.com/rdimitrov/go-tuf-metadata/metadata"
-	"github.com/rdimitrov/go-tuf-metadata/metadata/config"
-	"github.com/rdimitrov/go-tuf-metadata/metadata/updater"
+	"github.com/rdimitrov/go-tuf-metadata/metadata/multirepo"
 )
 
 // constants
@@ -61,19 +60,12 @@ type MetadataStatus struct {
 	Error      string `json:"error"`
 }
 
-// RemoteCache contains information to cache on the location of the remote
-// repository
-type remoteCache struct {
-	Mirror string `json:"mirror"`
-}
-
 // TUF represents a sigstore TUF client
 type TUF struct {
 	sync.Mutex
 	embedded fs.FS
-	client   *updater.Updater
+	client   *multirepo.MultiRepoClient
 	targets  targetImpl
-	mirror   string
 }
 
 type TargetFile struct {
@@ -82,43 +74,51 @@ type TargetFile struct {
 }
 
 // Initialize initializes a TUF client
-func Initialize(ctx context.Context, mirror string, root []byte) error {
+func Initialize(ctx context.Context, mirror string, customMap []byte) error {
 	// Initialize the client. Force an update with remote.
-	if _, err := initializeTUF(mirror, root, getEmbedded(), true); err != nil {
+	if _, err := initializeTUF(mirror, customMap, getEmbedded(), true); err != nil {
 		return err
-	}
-	// Store the remote for later if we are caching.
-	if !noCache() {
-		remoteInfo := &remoteCache{Mirror: mirror}
-		b, err := json.Marshal(remoteInfo)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(cachedRemote(rootCacheDir()), b, 0o600); err != nil {
-			return fmt.Errorf("storing remote: %w", err)
-		}
 	}
 	return nil
 }
 
-func initializeTUF(mirror string, root []byte, embedded fs.FS, forceUpdate bool) (*TUF, error) {
+func initializeTUF(mirror string, customMap []byte, embedded fs.FS, forceUpdate bool) (*TUF, error) {
 	initMu.Lock()
 	defer initMu.Unlock()
 	// bootstrap a TUF instance
 	singletonTUFOnce.Do(func() {
+		fmt.Println(" --- Initializing a multi-repository TUF client --- ")
 		t := &TUF{
-			mirror:   mirror,
 			embedded: embedded,
 			targets:  newFileImpl(),
 		}
-		// get trusted root.json
-		rootBytes, err := t.getRoot(root)
+		// prepare the multi-repo initialization
+		// get map.json
+		mapBytes, err := t.getMap(customMap)
 		if err != nil {
-			singletonTUFErr = fmt.Errorf("getting trusted root: %w", err)
+			singletonTUFErr = fmt.Errorf("getting map file: %w", err)
 			return
 		}
+
+		// unmarshal the map file (note: should we expect/support unrecognized values here?)
+		var mapFile *multirepo.MultiRepoMapType
+		if err := json.Unmarshal(mapBytes, &mapFile); err != nil {
+			singletonTUFErr = fmt.Errorf("unmarshal map file: %w", err)
+			return
+		}
+
+		// collect the trusted root metadata for each repository
+		trustedRoots := map[string][]byte{}
+		for repo := range mapFile.Repositories {
+			bytes, err := t.getRoot(repo)
+			if err != nil {
+				singletonTUFErr = fmt.Errorf("getting trusted root: %w", err)
+				return
+			}
+			trustedRoots[repo] = bytes
+		}
 		// configure the TUF client
-		cfg, err := config.New(t.mirror, rootBytes)
+		cfg, err := multirepo.NewConfig(mapBytes, trustedRoots)
 		if err != nil {
 			singletonTUFErr = fmt.Errorf("getting configuration for trusted root: %w", err)
 			return
@@ -128,7 +128,7 @@ func initializeTUF(mirror string, root []byte, embedded fs.FS, forceUpdate bool)
 		cfg.DisableLocalCache = noCache()
 
 		// create a new TUF client
-		t.client, err = updater.New(cfg)
+		t.client, err = multirepo.New(cfg)
 		if err != nil {
 			singletonTUFErr = fmt.Errorf("create updater instance: %w", err)
 			return
@@ -158,24 +158,18 @@ func GetRootStatus(ctx context.Context) (*RootStatus, error) {
 
 // TODO: Remove ctx arg.
 func NewFromEnv(_ context.Context) (*TUF, error) {
-	// Check for the current remote mirror.
-	mirror := getRemoteRoot()
-	b, err := os.ReadFile(cachedRemote(rootCacheDir()))
-	if err == nil {
-		remoteInfo := remoteCache{}
-		if err := json.Unmarshal(b, &remoteInfo); err == nil {
-			mirror = remoteInfo.Mirror
-		}
-	}
-
 	// Initializes a new TUF object from the local cache or defaults
-	return initializeTUF(mirror, nil, getEmbedded(), false)
+	return initializeTUF("", nil, getEmbedded(), false)
 }
 
 func (t *TUF) GetTargetsByMeta(usage UsageKind, fallbacks []string) ([]TargetFile, error) {
 	t.Lock()
-	targets := t.client.GetTopLevelTargets()
+	targets, err := t.client.GetTopLevelTargets()
 	t.Unlock()
+	// get the top-level targets
+	if err != nil {
+		return nil, err
+	}
 	var matchedTargets []TargetFile
 	for name, targetMeta := range targets {
 		// Skip any targets that do not include custom metadata.
@@ -215,80 +209,52 @@ func (t *TUF) GetTargetsByMeta(usage UsageKind, fallbacks []string) ([]TargetFil
 
 func (t *TUF) getRootStatus() (*RootStatus, error) {
 	local := rootCacheDir()
+	remote := ""
 	if noCache() {
 		local = "in-memory"
 	}
+	for repo, urls := range t.client.Config.RepoMap.Repositories {
+		// quite ugly but didn't want to change the struct yet
+		remote = fmt.Sprintf("%s %s", fmt.Sprintf("%s: %s", repo, strings.Join(urls, " ")), remote)
+	}
 	status := &RootStatus{
 		Local:    local,
-		Remote:   t.mirror,
+		Remote:   remote,
 		Metadata: make(map[string]MetadataStatus),
 		Targets:  []string{},
 	}
 
 	// Get targets
-	for targetName := range t.client.GetTopLevelTargets() {
+	targets, err := t.client.GetTopLevelTargets()
+	if err != nil {
+		return nil, err
+	}
+	for targetName := range targets {
 		status.Targets = append(status.Targets, targetName)
-	}
-
-	// Get trusted metadata set
-	trustedMeta := t.client.GetTrustedMetadataSet()
-
-	// Get root status
-	b, err := trustedMeta.Root.ToBytes(true)
-	if err != nil {
-		status.Metadata[fmt.Sprintf("%s.json", metadata.ROOT)] = MetadataStatus{Error: err.Error()}
-	} else {
-		status.Metadata[fmt.Sprintf("%s.json", metadata.ROOT)] = MetadataStatus{
-			Version:    int(trustedMeta.Root.Signed.Version),
-			Size:       len(b),
-			Expiration: trustedMeta.Root.Signed.Expires.Format(time.RFC822),
-		}
-	}
-
-	// Get Snapshot status
-	b, err = trustedMeta.Snapshot.ToBytes(true)
-	if err != nil {
-		status.Metadata[fmt.Sprintf("%s.json", metadata.SNAPSHOT)] = MetadataStatus{Error: err.Error()}
-	} else {
-		status.Metadata[fmt.Sprintf("%s.json", metadata.SNAPSHOT)] = MetadataStatus{
-			Version:    int(trustedMeta.Snapshot.Signed.Version),
-			Size:       len(b),
-			Expiration: trustedMeta.Snapshot.Signed.Expires.Format(time.RFC822),
-		}
-	}
-
-	// Get Timestamp status
-	b, err = trustedMeta.Timestamp.ToBytes(true)
-	if err != nil {
-		status.Metadata[fmt.Sprintf("%s.json", metadata.TIMESTAMP)] = MetadataStatus{Error: err.Error()}
-	} else {
-		status.Metadata[fmt.Sprintf("%s.json", metadata.TIMESTAMP)] = MetadataStatus{
-			Version:    int(trustedMeta.Timestamp.Signed.Version),
-			Size:       len(b),
-			Expiration: trustedMeta.Timestamp.Signed.Expires.Format(time.RFC822),
-		}
-	}
-
-	// Get Targets status
-	b, err = trustedMeta.Targets[metadata.TARGETS].ToBytes(true)
-	if err != nil {
-		status.Metadata[fmt.Sprintf("%s.json", metadata.TARGETS)] = MetadataStatus{Error: err.Error()}
-	} else {
-		status.Metadata[fmt.Sprintf("%s.json", metadata.TARGETS)] = MetadataStatus{
-			Version:    int(trustedMeta.Targets[metadata.TARGETS].Signed.Version),
-			Size:       len(b),
-			Expiration: trustedMeta.Targets[metadata.TARGETS].Signed.Expires.Format(time.RFC822),
-		}
 	}
 
 	return status, nil
 }
 
 func (t *TUF) update(force bool) error {
+	// see if a repository has a missing or an expired timestamp
+	timestampExpired := false
+	for _, clientTUF := range t.client.TUFClients {
+		if clientTUF.GetTrustedMetadataSet().Timestamp != nil {
+			if clientTUF.GetTrustedMetadataSet().Timestamp.Signed.IsExpired(time.Now().UTC()) {
+				timestampExpired = true
+				break
+			}
+		} else {
+			timestampExpired = true
+			break
+		}
+	}
 	// no need to update if we have the latest and valid timestamp or we are not forced to
-	if t.client.GetTrustedMetadataSet().Timestamp != nil && !t.client.GetTrustedMetadataSet().Timestamp.Signed.IsExpired(time.Now().UTC()) && !force {
+	if !timestampExpired && !force {
 		return nil
 	}
+	fmt.Println(" --- Updating the multi-repository client --- ")
 	// proceed updating, either forced update or there's no valid timestamp
 	// update the TUF metadata
 	err := t.client.Refresh()
@@ -299,13 +265,27 @@ func (t *TUF) update(force bool) error {
 			return err
 		}
 	}
-	// sync the target files
-	for targetName, targetInfo := range t.client.GetTopLevelTargets() {
+
+	// sync the target files, note that some of the targets for each repo might be missing because
+	// we want to have in sync only the targets which comply with the policies listed in the map.json file
+	targetFiles, err := t.client.GetTopLevelTargets()
+	if err != nil {
+		return err
+	}
+
+	// loop through all top-level targets (combined list for all repos excluding targets that failed to match the mappings in map.json)
+	for targetName := range targetFiles {
+		// get the target info and the list of repositories serving this target
+		targetInfo, repositories, err := t.client.GetTargetInfo(targetName)
+		if err != nil {
+			return err
+		}
 		// check if target is already present in cache
 		if cachedTargetBytes, err := t.targets.Get(targetName); err == nil {
 			// check if the target we have in cache is actually what we expect
 			if err = targetInfo.VerifyLengthHashes(cachedTargetBytes); err == nil {
 				// target is valid, proceed to the next one
+				fmt.Printf(" --- Target %s verified by a threshold of %d repositories is already present in cache --- \n", targetName, len(repositories))
 				continue
 			}
 		}
@@ -328,35 +308,70 @@ func (t *TUF) update(force bool) error {
 				if err := t.targets.Set(targetName, targetBytes); err != nil {
 					return err
 				}
+				fmt.Printf(" --- Target %s verified by a threshold of %d repositories loaded from the embedded cache --- \n", targetName, len(repositories))
 				// and proceed to the next one
 				continue
 			}
 		}
 		// target is not present in cache nor it is present in the embedded store
 		// so let's try to download it
-		_, targetBytes, err = singletonTUF.client.DownloadTarget(targetInfo, "", "")
+		_, targetBytes, err = t.client.DownloadTarget(repositories, targetInfo, "", "")
+		if err != nil {
+			panic(err)
+		}
 		if err != nil {
 			return fmt.Errorf("download target file %s - %w", targetName, err)
 		}
 		// persist it in cache
-		singletonTUF.targets.Set(targetName, targetBytes)
+		t.targets.Set(targetName, targetBytes)
+		fmt.Printf(" --- Target %s verified by a threshold of %d repositories downloaded from remote --- \n", targetName, len(repositories))
+
 	}
 	return nil
 }
 
-func (t *TUF) getRoot(root []byte) ([]byte, error) {
-	// If the caller does not supply a root, then either use the root in the local directory
-	// or default to the embedded one
-
-	// no need to do anything if root.json bytes are a provided
-	if root != nil {
-		return root, nil
+func (t *TUF) getMap(customMap []byte) ([]byte, error) {
+	// return the map file if there was one provided
+	if len(customMap) != 0 {
+		return customMap, nil
 	}
 
 	if !noCache() {
+		// see if there's already a map file available locally
+		mapFile, err := os.ReadFile(filepath.Join(rootCacheDir(), "map.json"))
+		if err == nil {
+			return mapFile, nil
+		}
+	}
+
+	// on first initialize, there will be no local map file, so read from the embedded store
+	rd, ok := t.embedded.(fs.ReadFileFS)
+	if !ok {
+		return nil, errors.New("fs.ReadFileFS unimplemented for embedded repo")
+	}
+	mapFile, err := rd.ReadFile(path.Join("repository", "map.json"))
+	if err != nil {
+		return nil, err
+	}
+
+	// store the map.json
+	if !noCache() {
+		if err := os.WriteFile(cachedRemote(rootCacheDir()), mapFile, 0o600); err != nil {
+			return nil, fmt.Errorf("storing map.json: %w", err)
+		}
+	}
+	return mapFile, nil
+}
+
+func (t *TUF) getRoot(repoName string) ([]byte, error) {
+	// build the trusted root metadata name
+	rootName := fmt.Sprintf("%s.%s", repoName, "root.json")
+	// If the caller does not supply a root, then either use the root in the local directory
+	// or default to the embedded one
+	if !noCache() {
 		// TODO: discuss this point
 		// see if there's already a root file available locally
-		trustedRoot, err := os.ReadFile(filepath.Join(cachedMetadataDir(rootCacheDir()), "root.json"))
+		trustedRoot, err := os.ReadFile(filepath.Join(cachedMetadataDir(rootCacheDir()), rootName))
 		if err == nil {
 			return trustedRoot, nil
 		}
@@ -367,7 +382,7 @@ func (t *TUF) getRoot(root []byte) ([]byte, error) {
 	if !ok {
 		return nil, errors.New("fs.ReadFileFS unimplemented for embedded repo")
 	}
-	trustedRoot, err := rd.ReadFile(path.Join("repository", "root.json"))
+	trustedRoot, err := rd.ReadFile(path.Join("repository", rootName))
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +393,7 @@ func (t *TUF) GetTarget(name string) ([]byte, error) {
 	t.Lock()
 	defer t.Unlock()
 	// Get valid target metadata. Does a local verification.
-	validMeta, err := t.client.GetTargetInfo(name)
+	validMeta, _, err := t.client.GetTargetInfo(name)
 	if err != nil {
 		return nil, fmt.Errorf("error verifying local metadata; local cache may be corrupt: %w", err)
 	}
